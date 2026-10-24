@@ -103,6 +103,7 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
 
 #ifdef __PROSPERO__
     struct usb_ctl_request req;
+    uint8_t dummy[32];
 
     if (type == CTRL_NINTENDO_SWITCH_PRO) {
         /* Switch Pro handshake 1: 0x80 0x02 0x01 */
@@ -144,11 +145,37 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
         log_line("usb_ctrl: DualShock 3 magic initialization sent");
         return 0;
     }
+    else if (type == CTRL_NINTENDO_WIIU_GC_ADAPTER) {
+        /* Wii U GameCube Adapter handshake: GET_REPORT to trigger first report.
+         * The adapter does not auto-transmit on the interrupt endpoint until
+         * the host issues a GET_REPORT control transfer (0x81, 0x01).
+         * After this, the adapter sends 8-byte reports on every interrupt poll. */
+        memset(&req, 0, sizeof(req));
+        req.ucr_request.bmRequestType = 0x81; /* Device to Host, Standard, Interface */
+        req.ucr_request.bRequest = 0x01;      /* GET_REPORT */
+        USETW(req.ucr_request.wValue, 0x0300); /* Report Type 3 (Input), Report ID 0 */
+        USETW(req.ucr_request.wIndex, 0x0000); /* Interface 0 */
+        USETW(req.ucr_request.wLength, 0x0008); /* 8-byte input report */
+        req.ucr_data = dummy;
+        int r = ioctl(fd, USB_DO_REQUEST, &req);
+        usleep(20000);
+
+        /* Second poll: attempt to receive the triggered report */
+        memset(&req, 0, sizeof(req));
+        req.ucr_request.bmRequestType = 0x81;
+        req.ucr_request.bRequest = 0x01;
+        USETW(req.ucr_request.wValue, 0x0300);
+        USETW(req.ucr_request.wIndex, 0x0000);
+        USETW(req.ucr_request.wLength, 0x0008);
+        req.ucr_data = dummy;
+        int r2 = ioctl(fd, USB_DO_REQUEST, &req);
+        log_line("usb_ctrl: Wii U GC adapter GET_REPORT handshake (r1=%d, r2=%d)", r, r2);
+        return 0;
+    }
     else if (type == CTRL_XBOX_XINPUT) {
         /* Handshake 1: ShanWan / Machenike / Clone wake-up control transfer.
          * Many third-party 2.4G dongles (045e:028e clones) boot into dormant mode
          * and will not emit input until this control transfer is dispatched. */
-        uint8_t dummy[32];
         memset(&req, 0, sizeof(req));
         req.ucr_request.bmRequestType = 0xc1; /* Device to host, vendor, interface */
         req.ucr_request.bRequest = 0x01;
